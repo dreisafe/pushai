@@ -86,7 +86,7 @@ def send_push_notification(message, link):
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode('utf-8'),
             headers={
-                "Title": "Gündem Özeti",
+                "Title": "Gundem Ozeti",
                 "Priority": "default",
                 "Click": link, # Bildirime tiklayinca habere gider
                 "Tags": "rotating_light" # Ikon ekler
