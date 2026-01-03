@@ -9,17 +9,18 @@ import time
 import re
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # BURAYI KENDI TOPIC ISMINLE DEGISTIR!
+# BURAYA TELEFONUNDA KULLANDIGIN GIZLI TOPIC ISMINI YAZ!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123" 
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
-# Engellenecek Kelimeler
+# Engellenecek Kelimeler (Spor, Magazin, Yarisma)
 BLOCKED_KEYWORDS = [
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
-    "kim milyoner olmak ister", "survivor"
+    "kim milyoner olmak ister", "survivor", "gelin evi"
 ]
 
 RSS_URLS = [
@@ -32,19 +33,18 @@ RSS_URLS = [
     "https://www.independentturkish.com/rss.xml"
 ]
 
-# API Key
+# API Key Kontrolu
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Key yoksa hata firlatmadan once bildirelim
 if not GEMINI_API_KEY:
-    print("API KEY YOK!")
+    print("HATA: API KEY Bulunamadi!")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# HTML temizleme fonksiyonu (AI kafasi karismasin diye)
+# HTML Temizleyici
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext[:1000] # Cok uzun metinleri kisaltalim
+    return cleantext[:1500] # Gemini 2.0 daha uzun metin isleyebilir
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -94,46 +94,47 @@ def find_image_url(entry):
     return None
 
 def summarize_news(title, summary):
-    # Model ismini "gemini-1.5-flash" olarak netlestirdik
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    # Sansur ayarlarini 'dictionary' formatiyla verelim (Daha kararli)
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
+    # İŞTE BURASI: 2026 Standartlarina uygun model
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+    except:
+        # Eger kutuphane cok eskiyse 'gemini-pro'ya dussun (Fallback)
+        model = genai.GenerativeModel('gemini-pro')
     
     clean_summary = clean_html(summary)
     
     prompt = f"""
-    Görevin: Aşağıdaki haberi okuyup, tek cümlelik, vurucu bir bildirim özeti yazmak.
-    1. En başa haberi anlatan TEK BİR EMOJİ koy (Örn: 🚨, 📉, 🏛️).
-    2. Sadece özet cümlesini yaz.
+    Görevin: Aşağıdaki haberi bir haber ajansı editörü gibi okumak ve kullanıcıya bildirim olarak gidecek şekilde özetlemek.
+    
+    Kurallar:
+    1. Haberin ana duygusunu veya konusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️, 🌍).
+    2. Sadece TEK BİR CÜMLE kur.
+    3. Asla "Haberde...", "Metinde..." gibi girişler yapma. Direkt olayı anlat.
+    4. Siyasi veya hassas içerik olsa bile tarafsızca özetle, sansürleme.
     
     Başlık: {title}
     İçerik: {clean_summary}
     """
     
     try:
-        response = model.generate_content(prompt, safety_settings=safety_settings)
+        # Guvenlik filtresi olmadan cagri yapiyoruz (Default ayarlar)
+        # Gemini 2.0 genellikle daha esnek oldugu icin extra ayara gerek yok
+        response = model.generate_content(prompt)
+        
         if response.text:
             return response.text.strip()
         else:
             return f"⚠️ AI Bos Dondu: {title}"
             
     except Exception as e:
-        # ISTE BURASI: Hatayi gizlemek yerine sana bildirim olarak yolluyoruz
         error_msg = str(e)
-        if "403" in error_msg:
-            return f"⚠️ API Key Hatası (403): Anahtarını kontrol et."
+        if "404" in error_msg:
+             return f"⚠️ Model Bulunamadı: Kütüphane güncellenmeli."
         elif "429" in error_msg:
-            return f"⚠️ Limit Doldu (429): Biraz bekle."
-        elif "finish_reason" in error_msg or "safety" in error_msg.lower():
-            return f"⚠️ Güvenlik Filtresi: {title}"
+            return f"⚠️ Kota Doldu: Biraz bekle."
         else:
-            return f"⚠️ Hata: {error_msg[:50]}..." 
+            # Hata mesajini kisaltip gonderelim ki gorelim
+            return f"⚠️ Hata: {error_msg[:60]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -157,7 +158,7 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print("Taranıyor...")
+    print("Haberler taraniyor (Gemini 2.0)...")
     
     for url in RSS_URLS:
         try:
@@ -188,6 +189,8 @@ def main():
 
     if new_entries_count > 0:
         save_history(history)
+    else:
+        print("Yeni haber yok.")
 
 if __name__ == "__main__":
     main()
