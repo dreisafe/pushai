@@ -15,7 +15,7 @@ HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
-# Engellenecek Kelimeler (Kucuk harfle yazin)
+# Engellenecek Kelimeler (Spor ve Magazin filtreleri)
 BLOCKED_KEYWORDS = [
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
@@ -39,28 +39,7 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-def summarize_news(title, summary):
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    prompt = f"""
-    Görevin: Aşağıdaki haberi okuyup, kullanıcıya bildirim olarak gidecek şekilde özetlemek.
-    Kurallar:
-    1. Haberin duygusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, ⚽, 🏛️).
-    2. Sadece TEK BİR CÜMLE kur.
-    3. Asla "Haberde...", "Metinde..." gibi ifadeler kullanma, direkt konuya gir.
-    
-    Başlık: {title}
-    İçerik: {summary}
-    """
-    
-    try:
-        # safety_settings kismini kaldirdik, varsayilan ayarlarla calissin
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        print(f"Gemini Hata: {e}")
-        return f"📰 {title}" 
-
+# NOT: Safety Settings kaldirildi, varsayilan ayarlarla calisacak.
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -97,24 +76,20 @@ def is_duplicate(entry, history):
     return False
 
 def find_image_url(entry):
-    # 1. Media Content kontrolu (Genellikle buradadir)
     if 'media_content' in entry:
         for media in entry.media_content:
             if 'image' in media.get('type', '') or 'jpg' in media.get('url', ''):
                 return media['url']
     
-    # 2. Links kontrolu
     if 'links' in entry:
         for link in entry.links:
             if 'image' in link.get('type', ''):
                 return link['href']
                 
-    # 3. Enclosure kontrolu
     if 'enclosures' in entry:
         for enclosure in entry.enclosures:
             if 'image' in enclosure.get('type', ''):
                 return enclosure['href']
-                
     return None
 
 def summarize_news(title, summary):
@@ -126,28 +101,26 @@ def summarize_news(title, summary):
     1. Haberin duygusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, ⚽, 🏛️).
     2. Sadece TEK BİR CÜMLE kur.
     3. Asla "Haberde...", "Metinde..." gibi ifadeler kullanma, direkt konuya gir.
-    4. İlgi çekici ve vurucu olsun.
     
     Başlık: {title}
     İçerik: {summary}
     """
     
     try:
-        # safety_settings parametresini buraya ekledik
-        response = model.generate_content(prompt, safety_settings=safety_settings)
+        # Kodun patlamamasi icin burayi sadelestirdik
+        response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         print(f"Gemini Hata: {e}")
-        return f"📰 {title}" # Hata olursa emoji + baslik don
+        return f"📰 {title}" 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
-        "Title": "Gundem Ozeti", # Turkce karakter sorunu icin duzeltildi
+        "Title": "Gundem Ozeti", 
         "Priority": "default",
         "Click": link,
     }
     
-    # Eger resim bulunduysa header'a ekle
     if image_url:
         headers["Attach"] = image_url
 
@@ -170,7 +143,6 @@ def main():
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:3]: 
-                # Spam ve Duplicate Kontrolu
                 if is_spam_or_blocked(entry.title):
                     continue
                     
@@ -179,13 +151,9 @@ def main():
                     
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    # AI Ozetleme
                     ai_summary = summarize_news(entry.title, content)
-                    
-                    # Resim Bulma
                     image_url = find_image_url(entry)
                     
-                    # Bildirim Gonder
                     send_push_notification(ai_summary, entry.link, image_url)
                     
                     history.append({
@@ -194,7 +162,6 @@ def main():
                         "date": datetime.now().isoformat()
                     })
                     new_entries_count += 1
-                    
                     time.sleep(2) 
                     
         except Exception as e:
@@ -203,7 +170,6 @@ def main():
 
     if new_entries_count > 0:
         save_history(history)
-        print(f"{new_entries_count} yeni haber islendi.")
     else:
         print("Yeni haber yok.")
 
