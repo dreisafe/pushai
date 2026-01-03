@@ -39,14 +39,28 @@ if not GEMINI_API_KEY:
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# --- GEMINI GUVENLIK AYARLARI (Sansuru Gevsetme) ---
-# Savas, politika vb. konularda "BLOCK_NONE" diyerek filtreyi kapatiyoruz.
-safety_settings = [
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-]
+def summarize_news(title, summary):
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    prompt = f"""
+    Görevin: Aşağıdaki haberi okuyup, kullanıcıya bildirim olarak gidecek şekilde özetlemek.
+    Kurallar:
+    1. Haberin duygusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, ⚽, 🏛️).
+    2. Sadece TEK BİR CÜMLE kur.
+    3. Asla "Haberde...", "Metinde..." gibi ifadeler kullanma, direkt konuya gir.
+    
+    Başlık: {title}
+    İçerik: {summary}
+    """
+    
+    try:
+        # safety_settings kismini kaldirdik, varsayilan ayarlarla calissin
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        print(f"Gemini Hata: {e}")
+        return f"📰 {title}" 
+
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
