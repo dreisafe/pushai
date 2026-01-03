@@ -8,28 +8,45 @@ from difflib import SequenceMatcher
 import time
 
 # --- AYARLAR ---
-# Kendine ozel, tahmin edilemez bir topic ismi sec (Bunu telefondaki ntfy uygulamasina da gireceksin)
+# BURAYA TELEFONDAKI TOPIC ISMINI YAZMAYI UNUTMA!
 NTFY_TOPIC = "haber_akis_gizli_xyz_123" 
-HISTORY_FILE = "history.json"
-MAX_HISTORY_ITEMS = 200 # Dosya cok sismesin diye son 200 haberi tutar
-SIMILARITY_THRESHOLD = 0.75 # %75 ve uzeri benzerlikte haber reddedilir
 
-# RSS Kaynaklari (Listeyi genislettim)
-RSS_URLS = [
-    "https://feeds.bbci.co.uk/turkce/rss.xml", # BBC Turkce
-    "https://rss.dw.com/xml/rss-tr-all",      # DW Turkce
-    "https://tr.euronews.com/rss",             # Euronews
-    "https://www.trthaber.com/sinema_xml.php", # TRT (Ornek kategori, ana akis degisebilir)
-    "https://www.voaturkce.com/api/zqyqyepqqt", # VOA Turkce
-    "https://tr.sputniknews.com/export/rss2/archive/index.xml" # Sputnik
+HISTORY_FILE = "history.json"
+MAX_HISTORY_ITEMS = 200
+SIMILARITY_THRESHOLD = 0.70 
+
+# Engellenecek Kelimeler (Kucuk harfle yazin)
+BLOCKED_KEYWORDS = [
+    "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
+    "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
+    "kim milyoner olmak ister", "survivor"
 ]
 
-# API Key Kontrolu
+RSS_URLS = [
+    "https://feeds.bbci.co.uk/turkce/rss.xml",
+    "https://rss.dw.com/xml/rss-tr-all",     
+    "https://tr.euronews.com/rss",            
+    "https://www.trthaber.com/manset_xml.php",
+    "https://www.voaturkce.com/api/zqyqyepqqt",
+    "https://tr.sputniknews.com/export/rss2/archive/index.xml",
+    "https://www.independentturkish.com/rss.xml"
+]
+
+# API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY cevre degiskeni bulunamadi!")
+    raise ValueError("GEMINI_API_KEY bulunamadi!")
 
 genai.configure(api_key=GEMINI_API_KEY)
+
+# --- GEMINI GUVENLIK AYARLARI (Sansuru Gevsetme) ---
+# Savas, politika vb. konularda "BLOCK_NONE" diyerek filtreyi kapatiyoruz.
+safety_settings = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -41,18 +58,23 @@ def load_history():
     return []
 
 def save_history(history_data):
-    # Sadece son N kaydi tut
     trimmed_data = history_data[-MAX_HISTORY_ITEMS:]
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(trimmed_data, f, ensure_ascii=False, indent=2)
 
+def is_spam_or_blocked(title):
+    title_lower = title.lower()
+    for keyword in BLOCKED_KEYWORDS:
+        if keyword in title_lower:
+            print(f"Engellenen icerik atlandi: {title}")
+            return True
+    return False
+
 def is_duplicate(entry, history):
-    # 1. URL Kontrolu
     for item in history:
         if item['link'] == entry.link:
             return True
     
-    # 2. Baslik Benzerlik Kontrolu (Semantic yakinlik icin basit text similarity)
     for item in history:
         similarity = SequenceMatcher(None, item['title'], entry.title).ratio()
         if similarity > SIMILARITY_THRESHOLD:
@@ -60,37 +82,66 @@ def is_duplicate(entry, history):
             return True
     return False
 
+def find_image_url(entry):
+    # 1. Media Content kontrolu (Genellikle buradadir)
+    if 'media_content' in entry:
+        for media in entry.media_content:
+            if 'image' in media.get('type', '') or 'jpg' in media.get('url', ''):
+                return media['url']
+    
+    # 2. Links kontrolu
+    if 'links' in entry:
+        for link in entry.links:
+            if 'image' in link.get('type', ''):
+                return link['href']
+                
+    # 3. Enclosure kontrolu
+    if 'enclosures' in entry:
+        for enclosure in entry.enclosures:
+            if 'image' in enclosure.get('type', ''):
+                return enclosure['href']
+                
+    return None
+
 def summarize_news(title, summary):
-    # Gemini Flash Modeli
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
-    Aşağıdaki haberi bir haber spikeri edasıyla, SON DAKİKA formatında, 
-    ilgi çekici ve vurucu TEK BİR CÜMLE haline getir. 
-    Türkçe karakter kurallarına uy.
+    Görevin: Aşağıdaki haberi okuyup, kullanıcıya bildirim olarak gidecek şekilde özetlemek.
+    Kurallar:
+    1. Haberin duygusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, ⚽, 🏛️).
+    2. Sadece TEK BİR CÜMLE kur.
+    3. Asla "Haberde...", "Metinde..." gibi ifadeler kullanma, direkt konuya gir.
+    4. İlgi çekici ve vurucu olsun.
     
-    Haber Başlığı: {title}
-    Haber İçeriği: {summary}
+    Başlık: {title}
+    İçerik: {summary}
     """
     
     try:
-        response = model.generate_content(prompt)
+        # safety_settings parametresini buraya ekledik
+        response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text.strip()
     except Exception as e:
         print(f"Gemini Hata: {e}")
-        return title # Hata olursa orijinal basligi don
+        return f"📰 {title}" # Hata olursa emoji + baslik don
 
-def send_push_notification(message, link):
+def send_push_notification(message, link, image_url=None):
+    headers = {
+        "Title": "Gundem Ozeti", # Turkce karakter sorunu icin duzeltildi
+        "Priority": "default",
+        "Click": link,
+    }
+    
+    # Eger resim bulunduysa header'a ekle
+    if image_url:
+        headers["Attach"] = image_url
+
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode('utf-8'),
-            headers={
-                "Title": "Gundem Ozeti",
-                "Priority": "default",
-                "Click": link, # Bildirime tiklayinca habere gider
-                "Tags": "rotating_light" # Ikon ekler
-            }
+            headers=headers
         )
     except Exception as e:
         print(f"Bildirim Hatasi: {e}")
@@ -101,24 +152,28 @@ def main():
     
     print("RSS Kaynaklari taraniyor...")
     
-    # RSS'leri gez
     for url in RSS_URLS:
         try:
             feed = feedparser.parse(url)
-            # Her feed'den sadece en guncel 3 haberi kontrol et (Performans icin)
             for entry in feed.entries[:3]: 
-                if not is_duplicate(entry, history):
-                    print(f"Yeni Haber Bulundu: {entry.title}")
+                # Spam ve Duplicate Kontrolu
+                if is_spam_or_blocked(entry.title):
+                    continue
                     
-                    # Gemini ile ozetle
-                    # Bazi RSS'lerde 'summary' yoktur, 'description' vardir
+                if not is_duplicate(entry, history):
+                    print(f"İşleniyor: {entry.title}")
+                    
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
+                    
+                    # AI Ozetleme
                     ai_summary = summarize_news(entry.title, content)
                     
-                    # Bildirim Gonder
-                    send_push_notification(ai_summary, entry.link)
+                    # Resim Bulma
+                    image_url = find_image_url(entry)
                     
-                    # Gecmise kaydet
+                    # Bildirim Gonder
+                    send_push_notification(ai_summary, entry.link, image_url)
+                    
                     history.append({
                         "title": entry.title,
                         "link": entry.link,
@@ -126,7 +181,6 @@ def main():
                     })
                     new_entries_count += 1
                     
-                    # API limitlerine takilmamak icin kisa bekleme
                     time.sleep(2) 
                     
         except Exception as e:
@@ -135,7 +189,7 @@ def main():
 
     if new_entries_count > 0:
         save_history(history)
-        print(f"{new_entries_count} yeni haber islendi ve kaydedildi.")
+        print(f"{new_entries_count} yeni haber islendi.")
     else:
         print("Yeni haber yok.")
 
