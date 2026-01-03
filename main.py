@@ -6,16 +6,16 @@ import google.generativeai as genai
 from datetime import datetime
 from difflib import SequenceMatcher
 import time
+import re
 
 # --- AYARLAR ---
-# BURAYA TELEFONDAKI TOPIC ISMINI YAZMAYI UNUTMA!
-NTFY_TOPIC = "haber_akis_gizli_xyz_123" 
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # BURAYI KENDI TOPIC ISMINLE DEGISTIR!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
-# Engellenecek Kelimeler (Spor ve Magazin filtreleri)
+# Engellenecek Kelimeler
 BLOCKED_KEYWORDS = [
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
@@ -34,12 +34,17 @@ RSS_URLS = [
 
 # API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Key yoksa hata firlatmadan once bildirelim
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY bulunamadi!")
+    print("API KEY YOK!")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# NOT: Safety Settings kaldirildi, varsayilan ayarlarla calisacak.
+# HTML temizleme fonksiyonu (AI kafasi karismasin diye)
+def clean_html(raw_html):
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return cleantext[:1000] # Cok uzun metinleri kisaltalim
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -59,7 +64,6 @@ def is_spam_or_blocked(title):
     title_lower = title.lower()
     for keyword in BLOCKED_KEYWORDS:
         if keyword in title_lower:
-            print(f"Engellenen icerik atlandi: {title}")
             return True
     return False
 
@@ -71,7 +75,6 @@ def is_duplicate(entry, history):
     for item in history:
         similarity = SequenceMatcher(None, item['title'], entry.title).ratio()
         if similarity > SIMILARITY_THRESHOLD:
-            print(f"Benzer haber elendi ({similarity:.2f}): {entry.title}")
             return True
     return False
 
@@ -80,12 +83,10 @@ def find_image_url(entry):
         for media in entry.media_content:
             if 'image' in media.get('type', '') or 'jpg' in media.get('url', ''):
                 return media['url']
-    
     if 'links' in entry:
         for link in entry.links:
             if 'image' in link.get('type', ''):
                 return link['href']
-                
     if 'enclosures' in entry:
         for enclosure in entry.enclosures:
             if 'image' in enclosure.get('type', ''):
@@ -93,26 +94,46 @@ def find_image_url(entry):
     return None
 
 def summarize_news(title, summary):
+    # Model ismini "gemini-1.5-flash" olarak netlestirdik
     model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # Sansur ayarlarini 'dictionary' formatiyla verelim (Daha kararli)
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    
+    clean_summary = clean_html(summary)
+    
     prompt = f"""
-    Görevin: Aşağıdaki haberi okuyup, kullanıcıya bildirim olarak gidecek şekilde özetlemek.
-    Kurallar:
-    1. Haberin duygusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, ⚽, 🏛️).
-    2. Sadece TEK BİR CÜMLE kur.
-    3. Asla "Haberde...", "Metinde..." gibi ifadeler kullanma, direkt konuya gir.
+    Görevin: Aşağıdaki haberi okuyup, tek cümlelik, vurucu bir bildirim özeti yazmak.
+    1. En başa haberi anlatan TEK BİR EMOJİ koy (Örn: 🚨, 📉, 🏛️).
+    2. Sadece özet cümlesini yaz.
     
     Başlık: {title}
-    İçerik: {summary}
+    İçerik: {clean_summary}
     """
     
     try:
-        # Kodun patlamamasi icin burayi sadelestirdik
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        if response.text:
+            return response.text.strip()
+        else:
+            return f"⚠️ AI Bos Dondu: {title}"
+            
     except Exception as e:
-        print(f"Gemini Hata: {e}")
-        return f"📰 {title}" 
+        # ISTE BURASI: Hatayi gizlemek yerine sana bildirim olarak yolluyoruz
+        error_msg = str(e)
+        if "403" in error_msg:
+            return f"⚠️ API Key Hatası (403): Anahtarını kontrol et."
+        elif "429" in error_msg:
+            return f"⚠️ Limit Doldu (429): Biraz bekle."
+        elif "finish_reason" in error_msg or "safety" in error_msg.lower():
+            return f"⚠️ Güvenlik Filtresi: {title}"
+        else:
+            return f"⚠️ Hata: {error_msg[:50]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -120,7 +141,6 @@ def send_push_notification(message, link, image_url=None):
         "Priority": "default",
         "Click": link,
     }
-    
     if image_url:
         headers["Attach"] = image_url
 
@@ -137,7 +157,7 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print("RSS Kaynaklari taraniyor...")
+    print("Taranıyor...")
     
     for url in RSS_URLS:
         try:
@@ -147,10 +167,9 @@ def main():
                     continue
                     
                 if not is_duplicate(entry, history):
-                    print(f"İşleniyor: {entry.title}")
-                    
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
+                    # AI Cagrisi
                     ai_summary = summarize_news(entry.title, content)
                     image_url = find_image_url(entry)
                     
@@ -165,13 +184,10 @@ def main():
                     time.sleep(2) 
                     
         except Exception as e:
-            print(f"RSS Hatasi ({url}): {e}")
             continue
 
     if new_entries_count > 0:
         save_history(history)
-    else:
-        print("Yeni haber yok.")
 
 if __name__ == "__main__":
     main()
