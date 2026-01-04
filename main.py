@@ -23,8 +23,6 @@ BLOCKED_KEYWORDS = [
     "kim kardashian", "premier league", "nba results", "lottery"
 ]
 
-# --- KAYNAK LISTESI (ISIM + URL) ---
-# Artik sadece URL degil, bildirimde gorunecek ISMI de yaziyoruz
 RSS_SOURCES = [
     # --- GLOBAL DEVLER ---
     {"name": "Reuters World", "url": "http://feeds.reuters.com/reuters/worldNews"},
@@ -46,7 +44,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# --- AKILLI MODEL SECICISI ---
 def get_best_model_name():
     try:
         available_models = []
@@ -86,18 +83,15 @@ def save_history(history_data):
 def is_spam_or_blocked(title):
     title_lower = title.lower()
     for keyword in BLOCKED_KEYWORDS:
-        if keyword in title_lower:
-            return True
+        if keyword in title_lower: return True
     return False
 
 def is_duplicate(entry, history):
     for item in history:
         if item['link'] == entry.link: return True
-        
     for item in history:
         similarity = SequenceMatcher(None, item['title'], entry.title).ratio()
-        if similarity > SIMILARITY_THRESHOLD:
-            return True
+        if similarity > SIMILARITY_THRESHOLD: return True
     return False
 
 def find_image_url(entry):
@@ -118,7 +112,7 @@ def summarize_news(title, summary, source_name):
     GÖREVİN:
     1. Haberi oku ve anla (İngilizce/Almanca olabilir).
     2. Çıktıyı MUTLAKA VE SADECE TÜRKÇE olarak ver.
-    3. Eğer haber Magazin, Spor skoru, Ansiklopedik bilgi veya Yerel 3. sayfa haberi ise SADECE "SKIP" YAZ.
+    3. Eğer haber Magazin, Spor skoru, Ansiklopedik bilgi, Yerel 3. sayfa haberi veya Reklam ise SADECE "SKIP" YAZ.
 
     4. Eğer haber ÖNEMLİ ise:
        - Başa olayı anlatan EMOJİ koy.
@@ -134,25 +128,15 @@ def summarize_news(title, summary, source_name):
         model = genai.GenerativeModel(ACTIVE_MODEL_NAME)
         response = model.generate_content(prompt)
         text = response.text.strip()
-        
         if "SKIP" in text: return "SKIP"
         return text
-            
     except Exception as e:
         if "429" in str(e): return "KOTA_DOLDU"
         return f"⚠️ Hata: {str(e)[:30]}..."
 
-# --- BILDIRIM FONKSIYONU (Artik kaynak ismini aliyor) ---
 def send_push_notification(message, link, source_name, image_url=None):
-    # Baslik kismini dinamik yaptik
-    headers = {
-        "Title": f"Kaynak: {source_name}", 
-        "Priority": "default", 
-        "Click": link
-    }
-    
+    headers = {"Title": f"Kaynak: {source_name}", "Priority": "default", "Click": link}
     if image_url: headers["Attach"] = image_url
-    
     try:
         requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode('utf-8'), headers=headers)
     except: pass
@@ -160,24 +144,19 @@ def send_push_notification(message, link, source_name, image_url=None):
 def main():
     history = load_history()
     new_entries_count = 0
-    print(f"Global Tarama Basliyor... Model: {ACTIVE_MODEL_NAME}")
+    print(f"Global Tarama Basliyor (Yavas Mod)... Model: {ACTIVE_MODEL_NAME}")
     
-    # Artik Source listesi uzerinde donuyoruz
     for source in RSS_SOURCES:
         url = source["url"]
         name = source["name"]
         
         try:
             feed = feedparser.parse(url)
-            # Her ajanstan sadece EN GUNCEL 1 haberi al (Hiz ve Kota icin)
             for entry in feed.entries[:1]: 
-                if is_spam_or_blocked(entry.title):
-                    continue
-                    
+                if is_spam_or_blocked(entry.title): continue
                 if not is_duplicate(entry, history):
-                    content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    # AI Karar Veriyor + Ismi gonderiyoruz
+                    content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     ai_result = summarize_news(entry.title, content, name)
                     
                     if ai_result == "SKIP":
@@ -186,23 +165,24 @@ def main():
                         continue
 
                     if ai_result == "KOTA_DOLDU":
-                        send_push_notification("⚠️ Kota limitine takıldı.", "https://google.com", "Sistem")
+                        # Kota dolduysa sadece log bas, bildirim atip rahatsiz etme artik
+                        print("⚠️ Kota doldu. Sonraki calismada devam edecek.")
                         break 
 
                     image_url = find_image_url(entry)
-                    
-                    # Bildirime Kaynak Ismini Gonderiyoruz
                     send_push_notification(ai_result, entry.link, name, image_url)
                     
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    print(f"Gonderildi: {name} - {entry.title}")
-                    time.sleep(10) 
+                    # --- KOTA KALKANI ---
+                    # Her isteğin arasina 45 SANIYE koyduk. 
+                    # 11 kaynak x 45 sn = ~8 dakika sürer. GitHub icin sorun yok, API icin cok guvenli.
+                    print(f"Gonderildi: {name}. Bekleniyor (45sn)...")
+                    time.sleep(45) 
             
             if "KOTA_DOLDU" in locals().get('ai_result', ''): break
         except Exception as e: 
-            print(f"Hata ({name}): {e}")
             continue
 
     if new_entries_count > 0: save_history(history)
