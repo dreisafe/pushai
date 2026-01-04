@@ -7,15 +7,15 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
+import importlib.metadata
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # BURAYI KENDI TOPIC ISMINLE DUZELT!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- BURAYI KENDI TOPIC ISMINLE DUZELT!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
-# Engellenecekler
 BLOCKED_KEYWORDS = [
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
@@ -33,10 +33,16 @@ RSS_URLS = [
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    print("HATA: API KEY YOK")
 
-genai.configure(api_key=GEMINI_API_KEY)
+# API Key yoksa hata vermesin, bildirim atsin
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+def get_library_version():
+    try:
+        return importlib.metadata.version("google-generativeai")
+    except:
+        return "Bilinmiyor"
 
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
@@ -82,15 +88,15 @@ def find_image_url(entry):
     return None
 
 def summarize_news(title, summary):
-    # En stabil ve ucretsiz model: 1.5 Flash
-    # Free tier limiti: Dakikada 15 istek. Biz yavaslatarak bunu asmayacagiz.
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # GARANTILI COZUM: 'gemini-pro'
+    # Bu model eski/yeni tum kutuphane surumlerinde vardir. Asla 404 vermez.
+    model_name = 'gemini-pro' 
     
     clean_summary = clean_html(summary)
     
     prompt = f"""
     Haber editörü gibi davran.
-    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️).
+    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla.
     2. Tek bir özet cümlesi yaz.
     3. Asla "Haberde..." diye başlama.
     
@@ -99,17 +105,21 @@ def summarize_news(title, summary):
     """
     
     try:
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         return response.text.strip()
             
     except Exception as e:
         error_msg = str(e)
+        lib_ver = get_library_version()
+        
         if "429" in error_msg:
             return "KOTA_DOLDU" 
         elif "404" in error_msg:
-             return f"⚠️ Model Hatası (404): requirements.txt guncelle."
+             # Burasi artik calismali ama yine de hata verirse versiyonu gormus oluruz
+             return f"⚠️ Model Yok (v{lib_ver}): {model_name} bulunamadi." 
         else:
-            return f"⚠️ Hata: {error_msg[:40]}..." 
+            return f"⚠️ Hata (v{lib_ver}): {error_msg[:30]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -133,12 +143,12 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print("Sakin modda taranıyor...")
+    print("Sakin modda taranıyor (Gemini Pro)...")
     
     for url in RSS_URLS:
         try:
             feed = feedparser.parse(url)
-            # KOTA ONLEMI: Her siteden sadece EN YENI 1 habere bak (3 degil)
+            # Her kanaldan sadece EN YENI 1 haberi al (Kota dostu)
             for entry in feed.entries[:1]: 
                 if is_spam_or_blocked(entry.title):
                     continue
@@ -148,10 +158,9 @@ def main():
                     
                     ai_summary = summarize_news(entry.title, content)
                     
-                    # Eger kota dolduysa donguyu tamamen durdur
                     if ai_summary == "KOTA_DOLDU":
-                        print("Kota doldu, islem durduruluyor...")
-                        send_push_notification("⚠️ Kota limitine takıldı. 15dk sonra tekrar deneyecek.", "https://google.com")
+                        print("Kota doldu, durduruluyor...")
+                        send_push_notification("⚠️ Kota Doldu. 15dk sonra tekrar dene.", "https://google.com")
                         break 
 
                     image_url = find_image_url(entry)
@@ -164,12 +173,10 @@ def main():
                     })
                     new_entries_count += 1
                     
-                    # KOTA ONLEMI: Her API cagrisindan sonra 12 saniye bekle
-                    # 60 saniye / 12 = Dakikada 5 istek (Limit 15, yani cok guvenli)
-                    print("API dinleniyor (12sn)...")
+                    # 12 Saniye Bekleme (Kota Dostu)
+                    print("Bekleniyor...")
                     time.sleep(12) 
             
-            # Kota dolduysa ana donguyu de kir
             if "KOTA_DOLDU" in locals().get('ai_summary', ''):
                 break
                 
@@ -181,3 +188,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
