@@ -9,16 +9,22 @@ import time
 import re
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- BURAYI KENDI KANAL ADINLA DUZELT!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KENDI KANAL ADINI YAZMAYI UNUTMA!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
+# GENISLETILMIS YASAKLI KELIMELER (İstemediğin her şeyi buraya ekle)
 BLOCKED_KEYWORDS = [
+    # Spor & Magazin
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
-    "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
-    "kim milyoner olmak ister", "survivor", "gelin evi"
+    "magazin", "ünlü oyuncu", "aşk iddiası", "burç", "astroloji", "survivor", "masterchef",
+    # Gereksiz 3. Sayfa Haberleri
+    "yangın", "kaza", "trafik kazası", "yaralı", "ceset", "cinayet", "kavga",
+    "hava durumu", "sağanak", "kar yağışı", "baraj doluluk",
+    # Analiz ve Clickbait
+    "kimdir?", "nedir?", "analiz:", "tarihçesi", "hayatı", "fiyatı ne kadar?"
 ]
 
 RSS_URLS = [
@@ -35,7 +41,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# --- AKILLI MODEL SECICISI (Bunu koruyoruz) ---
+# --- AKILLI MODEL SECICISI ---
 def get_best_model_name():
     try:
         available_models = []
@@ -43,23 +49,14 @@ def get_best_model_name():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
         
-        # Once Flash'i ara
         for model in available_models:
-            if "flash" in model.lower() and "1.5" in model:
-                return model 
-        
-        # Sonra Pro'yu ara
+            if "flash" in model.lower() and "1.5" in model: return model 
         for model in available_models:
-            if "pro" in model.lower() and "1.5" in model:
-                return model
+            if "pro" in model.lower() and "1.5" in model: return model
         
-        if available_models:
-            return available_models[0]
-            
+        if available_models: return available_models[0]
         return "models/gemini-1.5-flash"
-        
-    except Exception as e:
-        print(f"Hata: {e}")
+    except:
         return "models/gemini-1.5-flash"
 
 ACTIVE_MODEL_NAME = get_best_model_name()
@@ -72,10 +69,8 @@ def clean_html(raw_html):
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
+            try: return json.load(f)
+            except: return []
     return []
 
 def save_history(history_data):
@@ -92,113 +87,105 @@ def is_spam_or_blocked(title):
 
 def is_duplicate(entry, history):
     for item in history:
-        if item['link'] == entry.link:
-            return True
+        if item['link'] == entry.link: return True
     return False
 
 def find_image_url(entry):
     if 'media_content' in entry:
         for media in entry.media_content:
-            if 'image' in media.get('type', '') or 'jpg' in media.get('url', ''):
-                return media['url']
+            if 'image' in media.get('type', '') or 'jpg' in media.get('url', ''): return media['url']
     if 'links' in entry:
         for link in entry.links:
-            if 'image' in link.get('type', ''):
-                return link['href']
+            if 'image' in link.get('type', ''): return link['href']
     return None
 
 def summarize_news(title, summary):
     clean_summary = clean_html(summary)
     
-    # YENI PROMPT: Cok daha kisa ve net
+    # YENI PROMPT: ACIMASIZ EDITOR MODU
     prompt = f"""
-    Sen bir "Son Dakika" bildirim servisisin.
-    
-    Kurallar:
-    1. Haberi en iyi anlatan bir EMOJİ ile başla.
-    2. Haberi MAKSİMUM 10 KELİME ile özetle.
-    3. Asla nokta ile bitirme.
-    4. Gereksiz detayları at, sadece ana olayı yaz.
-    5. Cümle kurmana gerek yok, manşet at.
-    
-    Örnek Çıktı: 🚨 ABD Başkanı istifa ettiğini açıkladı
-    
-    Haber Başlığı: {title}
-    Haber İçeriği: {clean_summary}
+    Sen dünyanın en titiz haber editörüsün. Görevin gereksiz haberleri elemek.
+
+    KURALLAR:
+    1. Eğer haber şu kategorilerdense SADECE "SKIP" YAZ (Başka hiçbir şey yazma):
+       - Geçmiş tarihli analizler (Örn: "Bitcoin 17 yılda nasıl yükseldi?")
+       - Genel kültür yazıları, Biyografiler ("Maduro kimdir?")
+       - Yerel, küçük çaplı kazalar veya yangınlar.
+       - Sadece görüş bildiren köşe yazıları.
+
+    2. Eğer haber ÖNEMLİ ve SICAK BİR GELİŞME ise:
+       - Net bir EMOJİ ile başla.
+       - Haberi "X Kişisi, Y Kişisini TUTUKLADI/İADE ETTİ/VURDU" şeklinde FİİL kullanarak anlat.
+       - "Götürdü", "Getirdi" gibi muğlak kelimeler kullanma. Net ol.
+       - Maksimum 15 kelime kullan.
+
+    Başlık: {title}
+    İçerik: {clean_summary}
     """
     
     try:
         model = genai.GenerativeModel(ACTIVE_MODEL_NAME)
         response = model.generate_content(prompt)
-        return response.text.strip()
+        text = response.text.strip()
+        
+        # AI "SKIP" dediyse biz de kod icinde bunu yakalayacagiz
+        if "SKIP" in text:
+            return "SKIP"
+            
+        return text
             
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg:
-            return "KOTA_DOLDU" 
-        else:
-            return f"⚠️ Hata: {error_msg[:30]}..." 
+        if "429" in str(e): return "KOTA_DOLDU"
+        return f"⚠️ Hata: {str(e)[:30]}..."
 
 def send_push_notification(message, link, image_url=None):
-    headers = {
-        "Title": "Gundem Ozeti", 
-        "Priority": "default",
-        "Click": link,
-    }
-    if image_url:
-        headers["Attach"] = image_url
-
+    headers = {"Title": "Gundem Ozeti", "Priority": "default", "Click": link}
+    if image_url: headers["Attach"] = image_url
     try:
-        requests.post(
-            f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=message.encode('utf-8'),
-            headers=headers
-        )
-    except Exception as e:
-        print(f"Bildirim Hatasi: {e}")
+        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode('utf-8'), headers=headers)
+    except: pass
 
 def main():
     history = load_history()
     new_entries_count = 0
-    
-    print(f"Model: {ACTIVE_MODEL_NAME}")
+    print(f"Acimasiz Editor Modu Aktif... Model: {ACTIVE_MODEL_NAME}")
     
     for url in RSS_URLS:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:1]: 
+            for entry in feed.entries[:1]: # Sadece en guncel habere bak
                 if is_spam_or_blocked(entry.title):
                     continue
                     
                 if not is_duplicate(entry, history):
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    ai_summary = summarize_news(entry.title, content)
+                    # AI Karar Veriyor
+                    ai_result = summarize_news(entry.title, content)
                     
-                    if ai_summary == "KOTA_DOLDU":
+                    # Eger AI "Bu haber cop" dediyse pas gec
+                    if ai_result == "SKIP":
+                        print(f"Cop haber atlandi: {entry.title}")
+                        # Cop olsa bile history'ye ekleyelim ki surekli karsimiza cikmasin
+                        history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
+                        continue
+
+                    if ai_result == "KOTA_DOLDU":
                         send_push_notification("⚠️ Kota limitine takıldı.", "https://google.com")
                         break 
 
+                    # Kaliteli haber bulundu!
                     image_url = find_image_url(entry)
-                    send_push_notification(ai_summary, entry.link, image_url)
+                    send_push_notification(ai_result, entry.link, image_url)
                     
-                    history.append({
-                        "title": entry.title,
-                        "link": entry.link,
-                        "date": datetime.now().isoformat()
-                    })
+                    history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
-                    
                     time.sleep(12) 
             
-            if "KOTA_DOLDU" in locals().get('ai_summary', ''):
-                break
-                
-        except Exception as e:
-            continue
+            if "KOTA_DOLDU" in locals().get('ai_result', ''): break
+        except: continue
 
-    if new_entries_count > 0:
-        save_history(history)
+    if new_entries_count > 0: save_history(history)
 
 if __name__ == "__main__":
     main()
