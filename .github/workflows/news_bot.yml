@@ -2,24 +2,24 @@ name: Haber Botu
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # Her 15 dakikada bir calisir
+    - cron: '*/30 * * * *' # Her 30 dakikada bir calisir
   workflow_dispatch: # Manuel tetikleme icin
 
 permissions:
-  contents: write # Repoya yazma izni (history.json icin gerekli)
+  contents: write # Hafizayi kaydetmek icin yazma izni
 
 jobs:
   run-news-bot:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Depoyu Cek (Checkout)
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
 
     - name: Python Kurulumu
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
+        python-version: '3.9'
 
     - name: Kutuphaneleri Yukle
       run: |
@@ -27,13 +27,14 @@ jobs:
 
     - name: Botu Calistir
       env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # ISTE BURASI EKSIKTI! Anahtari bota teslim ediyoruz:
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       run: python main.py
-
+      
     - name: Degisiklikleri Kaydet (Commit & Push)
       run: |
-        git config --global user.name 'NewsBot AI'
-        git config --global user.email 'bot@noreply.github.com'
-        # Eger history.json degismisse commit at, yoksa hata verme
+        git config --global user.name 'GitHub Action'
+        git config --global user.email 'action@github.com'
         git add history.json
-        git diff --quiet && git diff --staged --quiet || (git commit -m "Veritabani guncellendi [skip ci]" && git push)
+        # Eger degisiklik varsa kaydet, yoksa hata verme
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Update history" && git push)
