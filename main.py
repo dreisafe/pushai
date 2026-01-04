@@ -12,37 +12,34 @@ import re
 NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KENDI KANAL ADINI YAZ!
 
 HISTORY_FILE = "history.json"
-MAX_HISTORY_ITEMS = 300 # Daha fazla kaynak = Daha fazla hafiza lazim
+MAX_HISTORY_ITEMS = 300 
 SIMILARITY_THRESHOLD = 0.65 
 
-# YASAKLI KELIMELER (Hem Turkce Hem Ingilizce)
 BLOCKED_KEYWORDS = [
-    # TR
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç", "astroloji", "survivor", "masterchef",
     "hava durumu", "gelin evi", "kim milyoner",
-    # EN (Global copleri de engellemek lazim)
     "football match", "celebrity", "horoscope", "gossip", "royal family", 
-    "kim kardashian", "premier league", "nba results"
+    "kim kardashian", "premier league", "nba results", "lottery"
 ]
 
-# --- GLOBAL ISTIHBARAT LISTESI ---
-# Dünyanin en hizli ajanslari + Turkce kaynaklar
-RSS_URLS = [
-    # --- GLOBAL DEVLER (Haber buraya once duser) ---
-    "http://feeds.reuters.com/reuters/worldNews",       # Reuters Dunya (Cok Hizli)
-    "http://feeds.bbci.co.uk/news/world/rss.xml",       # BBC World
-    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml", # NY Times
-    "https://www.aljazeera.com/xml/rss/all.xml",        # Al Jazeera (Ortadogu uzmani)
-    "https://feeds.skynews.com/feeds/rss/world.xml",    # Sky News
-    "https://www.cnbc.com/id/100727362/device/rss/rss.html", # Dunya Ekonomisi/Borsa
+# --- KAYNAK LISTESI (ISIM + URL) ---
+# Artik sadece URL degil, bildirimde gorunecek ISMI de yaziyoruz
+RSS_SOURCES = [
+    # --- GLOBAL DEVLER ---
+    {"name": "Reuters World", "url": "http://feeds.reuters.com/reuters/worldNews"},
+    {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml"},
+    {"name": "NY Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
+    {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml"},
+    {"name": "CNBC Economy", "url": "https://www.cnbc.com/id/100727362/device/rss/rss.html"},
     
     # --- TURKCE KAYNAKLAR ---
-    "https://feeds.bbci.co.uk/turkce/rss.xml",
-    "https://rss.dw.com/xml/rss-tr-all",     
-    "https://tr.euronews.com/rss",            
-    "https://www.voaturkce.com/api/zqyqyepqqt",
-    "https://www.independentturkish.com/rss.xml"
+    {"name": "BBC Türkçe", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
+    {"name": "DW Türkçe", "url": "https://rss.dw.com/xml/rss-tr-all"},     
+    {"name": "Euronews TR", "url": "https://tr.euronews.com/rss"},            
+    {"name": "VOA Türkçe", "url": "https://www.voaturkce.com/api/zqyqyepqqt"},
+    {"name": "Independent TR", "url": "https://www.independentturkish.com/rss.xml"}
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -57,11 +54,8 @@ def get_best_model_name():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
         
-        # Once 1.5 Flash (Hizli/Ucuz)
         for model in available_models:
             if "flash" in model.lower() and "1.5" in model: return model 
-        
-        # Sonra Pro
         for model in available_models:
             if "pro" in model.lower() and "1.5" in model: return model
         
@@ -75,7 +69,7 @@ ACTIVE_MODEL_NAME = get_best_model_name()
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext[:2000] # Global haberler uzun olabilir
+    return cleantext[:2000] 
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -97,13 +91,9 @@ def is_spam_or_blocked(title):
     return False
 
 def is_duplicate(entry, history):
-    # 1. Link Kontrolu (Kesin)
     for item in history:
         if item['link'] == entry.link: return True
         
-    # 2. Baslik Benzerligi (Fuzzy Match)
-    # Ingilizce vs Turkce basliklari yakalamak zordur ama 
-    # ayni ajanstan gelen tekrarlari engeller.
     for item in history:
         similarity = SequenceMatcher(None, item['title'], entry.title).ratio()
         if similarity > SIMILARITY_THRESHOLD:
@@ -119,32 +109,25 @@ def find_image_url(entry):
             if 'image' in link.get('type', ''): return link['href']
     return None
 
-def summarize_news(title, summary, source_url):
+def summarize_news(title, summary, source_name):
     clean_summary = clean_html(summary)
     
-    # PROMPT: GLOBAL MÜTERCİM TERCÜMAN & ACIMASIZ EDİTÖR
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
-    Gelen haber İngilizce, Almanca veya Fransızca olabilir.
     
     GÖREVİN:
-    1. Haberi oku ve anla.
+    1. Haberi oku ve anla (İngilizce/Almanca olabilir).
     2. Çıktıyı MUTLAKA VE SADECE TÜRKÇE olarak ver.
-    3. Eğer haber şu kategorilerdense SADECE "SKIP" YAZ:
-       - Magazin, Kraliyet ailesi dedikoduları, Spor skorları.
-       - "Nedir?", "Kimdir?" tarzı ansiklopedik bilgiler.
-       - Yerel küçük trafik kazaları veya 3. sayfa haberleri.
-       - Reklam veya ürün tanıtımı.
+    3. Eğer haber Magazin, Spor skoru, Ansiklopedik bilgi veya Yerel 3. sayfa haberi ise SADECE "SKIP" YAZ.
 
-    4. Eğer haber ÖNEMLİ (Savaş, Kriz, Ekonomi, Teknoloji, Siyaset) ise:
+    4. Eğer haber ÖNEMLİ ise:
        - Başa olayı anlatan EMOJİ koy.
        - Haberi TÜRKÇE olarak, en fazla 15 kelimeyle, SONUÇ ODAKLI özetle.
-       - Asla "Haberde...", "Reuters'ın bildirdiğine göre..." deme. Direkt olayı yaz.
-       - Örnek: "🚨 İsrail ve Lübnan arasında ateşkes antlaşması imzalandı."
+       - Asla "Haberde..." veya "{source_name}'e göre..." deme. Direkt olayı yaz.
 
-    Haber Kaynağı: {source_url}
-    Başlık (Orijinal): {title}
-    İçerik (Orijinal): {clean_summary}
+    Haber Kaynağı: {source_name}
+    Başlık: {title}
+    İçerik: {clean_summary}
     """
     
     try:
@@ -159,9 +142,17 @@ def summarize_news(title, summary, source_url):
         if "429" in str(e): return "KOTA_DOLDU"
         return f"⚠️ Hata: {str(e)[:30]}..."
 
-def send_push_notification(message, link, image_url=None):
-    headers = {"Title": "Global Istihbarat", "Priority": "default", "Click": link}
+# --- BILDIRIM FONKSIYONU (Artik kaynak ismini aliyor) ---
+def send_push_notification(message, link, source_name, image_url=None):
+    # Baslik kismini dinamik yaptik
+    headers = {
+        "Title": f"Kaynak: {source_name}", 
+        "Priority": "default", 
+        "Click": link
+    }
+    
     if image_url: headers["Attach"] = image_url
+    
     try:
         requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode('utf-8'), headers=headers)
     except: pass
@@ -171,10 +162,14 @@ def main():
     new_entries_count = 0
     print(f"Global Tarama Basliyor... Model: {ACTIVE_MODEL_NAME}")
     
-    for url in RSS_URLS:
+    # Artik Source listesi uzerinde donuyoruz
+    for source in RSS_SOURCES:
+        url = source["url"]
+        name = source["name"]
+        
         try:
             feed = feedparser.parse(url)
-            # Her ajanstan sadece EN GUNCEL 1 haberi al (Kota dostu)
+            # Her ajanstan sadece EN GUNCEL 1 haberi al (Hiz ve Kota icin)
             for entry in feed.entries[:1]: 
                 if is_spam_or_blocked(entry.title):
                     continue
@@ -182,8 +177,8 @@ def main():
                 if not is_duplicate(entry, history):
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    # AI Karar Veriyor + Turkceye ceviriyor
-                    ai_result = summarize_news(entry.title, content, url)
+                    # AI Karar Veriyor + Ismi gonderiyoruz
+                    ai_result = summarize_news(entry.title, content, name)
                     
                     if ai_result == "SKIP":
                         print(f"Elenen Haber: {entry.title}")
@@ -191,21 +186,24 @@ def main():
                         continue
 
                     if ai_result == "KOTA_DOLDU":
-                        send_push_notification("⚠️ Kota limitine takıldı.", "https://google.com")
+                        send_push_notification("⚠️ Kota limitine takıldı.", "https://google.com", "Sistem")
                         break 
 
                     image_url = find_image_url(entry)
-                    send_push_notification(ai_result, entry.link, image_url)
+                    
+                    # Bildirime Kaynak Ismini Gonderiyoruz
+                    send_push_notification(ai_result, entry.link, name, image_url)
                     
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    # Cok fazla kaynak var, API'yi yormamak icin beklemeyi artirdik
-                    print("Diger kaynağa geçiliyor (10sn)...")
+                    print(f"Gonderildi: {name} - {entry.title}")
                     time.sleep(10) 
             
             if "KOTA_DOLDU" in locals().get('ai_result', ''): break
-        except: continue
+        except Exception as e: 
+            print(f"Hata ({name}): {e}")
+            continue
 
     if new_entries_count > 0: save_history(history)
 
