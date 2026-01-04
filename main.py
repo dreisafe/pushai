@@ -35,39 +35,34 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# --- AKILLI MODEL SECICISI ---
+# --- AKILLI MODEL SECICISI (Bunu koruyoruz) ---
 def get_best_model_name():
-    """Google'a sorar ve elindeki en iyi modeli otomatik secer."""
     try:
         available_models = []
-        # Google'dan model listesini iste
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
         
-        # 1. Tercih: Flash Modelleri (Hizli ve Ucuz)
+        # Once Flash'i ara
         for model in available_models:
             if "flash" in model.lower() and "1.5" in model:
-                return model # Örn: models/gemini-1.5-flash
+                return model 
         
-        # 2. Tercih: Pro Modelleri
+        # Sonra Pro'yu ara
         for model in available_models:
             if "pro" in model.lower() and "1.5" in model:
                 return model
         
-        # 3. Hicbiri yoksa listedeki ilkini al
         if available_models:
             return available_models[0]
             
-        return "models/gemini-1.5-flash" # Liste bos donerse varsayilani dene
+        return "models/gemini-1.5-flash"
         
     except Exception as e:
-        print(f"Model listesi alinamadi: {e}")
+        print(f"Hata: {e}")
         return "models/gemini-1.5-flash"
 
-# Global degisken olarak modeli bir kere belirle
 ACTIVE_MODEL_NAME = get_best_model_name()
-print(f"✅ Secilen Model: {ACTIVE_MODEL_NAME}")
 
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
@@ -115,17 +110,24 @@ def find_image_url(entry):
 def summarize_news(title, summary):
     clean_summary = clean_html(summary)
     
+    # YENI PROMPT: Cok daha kisa ve net
     prompt = f"""
-    Haber editörü gibi davran.
-    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️).
-    2. Tek bir özet cümlesi yaz.
+    Sen bir "Son Dakika" bildirim servisisin.
     
-    Başlık: {title}
-    İçerik: {clean_summary}
+    Kurallar:
+    1. Haberi en iyi anlatan bir EMOJİ ile başla.
+    2. Haberi MAKSİMUM 10 KELİME ile özetle.
+    3. Asla nokta ile bitirme.
+    4. Gereksiz detayları at, sadece ana olayı yaz.
+    5. Cümle kurmana gerek yok, manşet at.
+    
+    Örnek Çıktı: 🚨 ABD Başkanı istifa ettiğini açıkladı
+    
+    Haber Başlığı: {title}
+    Haber İçeriği: {clean_summary}
     """
     
     try:
-        # Otomatik sectigimiz modeli kullaniyoruz
         model = genai.GenerativeModel(ACTIVE_MODEL_NAME)
         response = model.generate_content(prompt)
         return response.text.strip()
@@ -135,7 +137,7 @@ def summarize_news(title, summary):
         if "429" in error_msg:
             return "KOTA_DOLDU" 
         else:
-            return f"⚠️ Hata ({ACTIVE_MODEL_NAME}): {error_msg[:30]}..." 
+            return f"⚠️ Hata: {error_msg[:30]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -159,7 +161,7 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print(f"Tarama Basliyor... Model: {ACTIVE_MODEL_NAME}")
+    print(f"Model: {ACTIVE_MODEL_NAME}")
     
     for url in RSS_URLS:
         try:
@@ -174,7 +176,7 @@ def main():
                     ai_summary = summarize_news(entry.title, content)
                     
                     if ai_summary == "KOTA_DOLDU":
-                        send_push_notification("⚠️ Kota Doldu. Bekleniyor.", "https://google.com")
+                        send_push_notification("⚠️ Kota limitine takıldı.", "https://google.com")
                         break 
 
                     image_url = find_image_url(entry)
@@ -187,7 +189,6 @@ def main():
                     })
                     new_entries_count += 1
                     
-                    # 12 saniye fren
                     time.sleep(12) 
             
             if "KOTA_DOLDU" in locals().get('ai_summary', ''):
