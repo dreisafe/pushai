@@ -7,10 +7,9 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
-import importlib.metadata
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- BURAYI KENDI TOPIC ISMINLE DUZELT!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- BURAYI KENDI KANAL ADINLA DUZELT!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
@@ -33,16 +32,8 @@ RSS_URLS = [
 ]
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# API Key yoksa hata vermesin, bildirim atsin
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-
-def get_library_version():
-    try:
-        return importlib.metadata.version("google-generativeai")
-    except:
-        return "Bilinmiyor"
 
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
@@ -88,15 +79,14 @@ def find_image_url(entry):
     return None
 
 def summarize_news(title, summary):
-    # GARANTILI COZUM: 'gemini-pro'
-    # Bu model eski/yeni tum kutuphane surumlerinde vardir. Asla 404 vermez.
-    model_name = 'gemini-pro' 
+    # Kutuphane guncellendigi icin (v0.8.6) artik bu model kesin calisir!
+    model_name = 'gemini-1.5-flash'
     
     clean_summary = clean_html(summary)
     
     prompt = f"""
     Haber editörü gibi davran.
-    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla.
+    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️).
     2. Tek bir özet cümlesi yaz.
     3. Asla "Haberde..." diye başlama.
     
@@ -111,15 +101,10 @@ def summarize_news(title, summary):
             
     except Exception as e:
         error_msg = str(e)
-        lib_ver = get_library_version()
-        
         if "429" in error_msg:
             return "KOTA_DOLDU" 
-        elif "404" in error_msg:
-             # Burasi artik calismali ama yine de hata verirse versiyonu gormus oluruz
-             return f"⚠️ Model Yok (v{lib_ver}): {model_name} bulunamadi." 
         else:
-            return f"⚠️ Hata (v{lib_ver}): {error_msg[:30]}..." 
+            return f"⚠️ Hata: {error_msg[:40]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -143,12 +128,12 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print("Sakin modda taranıyor (Gemini Pro)...")
+    print("Sakin modda taranıyor (1.5 Flash)...")
     
     for url in RSS_URLS:
         try:
             feed = feedparser.parse(url)
-            # Her kanaldan sadece EN YENI 1 haberi al (Kota dostu)
+            # Her kanaldan EN YENI 1 haber (Kota icin)
             for entry in feed.entries[:1]: 
                 if is_spam_or_blocked(entry.title):
                     continue
@@ -159,8 +144,7 @@ def main():
                     ai_summary = summarize_news(entry.title, content)
                     
                     if ai_summary == "KOTA_DOLDU":
-                        print("Kota doldu, durduruluyor...")
-                        send_push_notification("⚠️ Kota Doldu. 15dk sonra tekrar dene.", "https://google.com")
+                        send_push_notification("⚠️ Kota limitine takıldı. Bekleniyor.", "https://google.com")
                         break 
 
                     image_url = find_image_url(entry)
@@ -173,8 +157,7 @@ def main():
                     })
                     new_entries_count += 1
                     
-                    # 12 Saniye Bekleme (Kota Dostu)
-                    print("Bekleniyor...")
+                    # 12 saniye fren
                     time.sleep(12) 
             
             if "KOTA_DOLDU" in locals().get('ai_summary', ''):
@@ -188,4 +171,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
