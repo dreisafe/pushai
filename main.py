@@ -15,13 +15,19 @@ HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
 CONTEXT_WINDOW_SIZE = 15
 
-# Python tarafındaki basit kelime filtresini de güçlendirelim
+# Python tarafındaki filtreyi (Blacklist) genişletiyoruz
 BLOCKED_KEYWORDS = [
+    # Spor & Magazin
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç", "astroloji", "survivor", "masterchef",
     "gelin evi", "kim milyoner", "royal family", "gossip", "kim kardashian", 
     "premier league", "piyango", "çekiliş", "yerel seçim", "muhtar", 
-    "yeni telefon", "tanıttı", "lansman", "özellikleri sızdı", "fiyatı belli oldu" # Teknoloji coplugu
+    # Teknoloji Çöplüğü
+    "yeni telefon", "tanıttı", "lansman", "özellikleri sızdı", "fiyatı belli oldu", 
+    "iphone", "android", "samsung", "inceleme",
+    # Arkeoloji / Tarih / Gereksiz Bilim (Kremasyon Pyresi vb.)
+    "arkeolojik", "kazı", "bulundu", "yıllık", "yıl önce", "antik", "fosil", "kemik", 
+    "mezar", "lahit", "müze", "restorasyon", "keşfedildi", "tarihi eser", "dinozor"
 ]
 
 RSS_SOURCES = [
@@ -83,7 +89,6 @@ def find_image_url(entry):
             if 'image' in link.get('type', ''): return link['href']
     return None
 
-# --- YENİLENEN YZ ANALİZ FONKSİYONU ---
 def analyze_news_groq(title, summary, source_name, recent_history_titles):
     if not client: return "API_KEY_YOK"
     
@@ -91,40 +96,40 @@ def analyze_news_groq(title, summary, source_name, recent_history_titles):
     if len(clean_summary) < 10: clean_summary = title
     history_context = "\n".join([f"- {h}" for h in recent_history_titles])
 
-    # PROMPT V2: Ciddi, Emojisiz, Detay Odaklı
+    # PROMPT V3: KATI FİLTRELER VE BAĞLAM ZORUNLULUĞU
     prompt = f"""
-    Rol: İstihbarat ve Strateji Analisti.
-    
-    KURALLAR (KESİN):
-    1. ASLA EMOJİ KULLANMA. Sadece saf metin.
-    2. "Kınadı", "Endişeli", "Çağrı yaptı", "Eleştirdi" gibi sadece sözden ibaret eylemleri SKIP (atla). Sadece somut olaylar (saldırı, istifa, anlaşma, tutuklama, iflas) haberdir.
-    3. Teknoloji ürünü tanıtımı (yeni telefon, yapay zeka lansmanı) SKIP.
-    4. Magazin, spor, yerel 3. sayfa haberleri SKIP.
-    5. MUĞLAK KONUŞMA: "İddianame açıklandı" deme -> "Uyuşturucu suçlamasıyla iddianame açıklandı" de. Olayın SEBEBİNİ kısaca ekle.
-    
+    Rol: Askeri İstihbarat Analisti.
+
+    KATİ YASAKLAR (BUNLARI GÖRÜRSEN SADECE "SKIP" YAZ):
+    1. ARKEOLOJİ/TARİH: Eski mezar, kemik, antik kent, 5000 yıllık keşif, dinozor vb.
+    2. SÖZLÜ EYLEMLER: Kınadı, endişeli, çağrı yaptı, sert çıktı, atıştı.
+    3. MAGAZİN/SPOR/TEKNOLOJİ ÜRÜNLERİ.
+    4. YEREL KAZALAR: Trafik kazası, küçük yangınlar (orman yangını veya stratejik sabotaj değilse).
+
+    ÖZETLEME KURALLARI:
+    1. "GÖTÜRÜLDÜ" YASAK: Bir devlet adamı veya kişi yer değiştiriyorsa STATÜSÜNÜ yazacaksın. (Örn: "Maduro New York'a götürüldü" DEME -> "Maduro TUTUKLANARAK New York'a iade edildi" DE).
+    2. NEDEN SONUÇ İLİŞKİSİ: Olayın sebebini en kısa şekilde ekle.
+    3. EMOJİ YOK. Sadece saf, ciddi Türkçe.
+    4. Max 140 karakter.
+
     GÖREV:
-    Aşağıdaki haberi analiz et. Eğer GEÇMİŞ HABERLER listesinde zaten varsa SKIP yaz.
-    Eğer haber stratejik öneme sahipse, bildirim paneline sığacak şekilde (max 140 karakter) Türkçe özetle.
-    
+    Haberi analiz et. Eğer stratejik, küresel veya ciddi bir kriz değilse SKIP yaz.
+    Eğer önemliyse yukarıdaki kurallara göre özetle.
+
     --- VERİLER ---
     KAYNAK: {source_name}
-    GEÇMİŞ:
+    GEÇMİŞ (Tekrarı önle):
     {history_context}
     
     YENİ HABER:
     Başlık: {title}
     İçerik: {clean_summary}
-    
-    ÇIKTI FORMATI (Sadece biri):
-    SKIP
-    veya
-    [Haberin Özeti]
     """
     
     try:
         chat_completion = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Sen ciddi, kısa ve net rapor veren bir asistansın. Gereksiz kelime kullanmazsın."},
+                {"role": "system", "content": "Sen sadece çok önemli stratejik gelişmeleri raporlayan bir botsun."},
                 {"role": "user", "content": prompt}
             ],
             model="llama-3.3-70b-versatile",
@@ -132,11 +137,9 @@ def analyze_news_groq(title, summary, source_name, recent_history_titles):
         )
         text = chat_completion.choices[0].message.content.strip()
         
-        # Bazen model "SKIP" yerine aciklama yazar, onu engellemek icin:
         if "SKIP" in text or "skip" in text.lower():
-            if len(text) < 10: return "SKIP" # Sadece SKIP yazdiysa
+            if len(text) < 15: return "SKIP"
         
-        # Tirnak isaretlerini temizle ki bildirimde cirkin durmasin
         text = text.replace('"', '').replace("'", "")
         return text
 
@@ -144,7 +147,6 @@ def analyze_news_groq(title, summary, source_name, recent_history_titles):
         return f"Hata: {str(e)[:20]}"
 
 def send_push_notification(message, link, source_name, image_url=None):
-    # Baslikta artik sadece Kaynak Ismi var, [ONEMLI] vs yok.
     headers = {"Title": source_name, "Priority": "high", "Click": link}
     if image_url: headers["Attach"] = image_url
     try:
@@ -155,7 +157,7 @@ def main():
     history = load_history()
     recent_titles = [item['title'] for item in history[-CONTEXT_WINDOW_SIZE:]]
     new_entries_count = 0
-    print(f"--- Haber Taraması (V2 - Ciddi Mod): {datetime.now().strftime('%H:%M')} ---")
+    print(f"--- Haber Taraması (V3 - General Mod): {datetime.now().strftime('%H:%M')} ---")
     
     for source in RSS_SOURCES:
         try:
