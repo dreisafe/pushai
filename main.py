@@ -7,9 +7,10 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
+import html  # <-- YENI: HTML kodlarini temizlemek icin
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZMAYI UNUTMA!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZ!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
@@ -31,11 +32,12 @@ RSS_SOURCES = [
     {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
     {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml"},
     
-    # --- TURKCE KAYNAKLAR ---
-    {"name": "BBC Türkçe", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
-    {"name": "DW Türkçe", "url": "https://rss.dw.com/xml/rss-tr-all"},     
+    # --- TURKCE KAYNAKLAR (KARAKTER DUZELTMELI) ---
+    # Baslikta sorun cikmamasi icin Turkce karakterleri kaldirdik
+    {"name": "BBC Turkce", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
+    {"name": "DW Turkce", "url": "https://rss.dw.com/xml/rss-tr-all"},     
     {"name": "Euronews TR", "url": "https://tr.euronews.com/rss"},            
-    {"name": "VOA Türkçe", "url": "https://www.voaturkce.com/api/zqyqyepqqt"},
+    {"name": "VOA Turkce", "url": "https://www.voaturkce.com/api/zqyqyepqqt"},
     {"name": "Independent TR", "url": "https://www.independentturkish.com/rss.xml"}
 ]
 
@@ -45,8 +47,12 @@ if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
 def clean_html(raw_html):
+    if not raw_html: return ""
+    # 1. HTML etiketlerini temizle (<br>, <p> vs)
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
+    # 2. HTML kodlarini duzelt (&amp; -> & gibi)
+    cleantext = html.unescape(cleantext)
     return cleantext[:2500] 
 
 def load_history():
@@ -89,6 +95,10 @@ def summarize_news_groq(title, summary, source_name):
     
     clean_summary = clean_html(summary)
     
+    # Eger ozet bossa, basligi ozet niyetine kullan (Guvenlik Onlemi)
+    if len(clean_summary) < 10:
+        clean_summary = title
+
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
     
@@ -108,13 +118,13 @@ def summarize_news_groq(title, summary, source_name):
     """
     
     try:
-        # MODEL GUNCELLEMESI: Llama 3.3 (En yeni ve guclu model)
+        # Llama 3.3 - En guclu ve guncel model
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Sen Türkçe haber özetleyen bir asistansın."},
                 {"role": "user", "content": prompt}
             ],
-            model="llama-3.3-70b-versatile", # Iste yeni guc kaynagimiz bu!
+            model="llama-3.3-70b-versatile",
             temperature=0.3, 
         )
         text = chat_completion.choices[0].message.content.strip()
@@ -126,6 +136,7 @@ def summarize_news_groq(title, summary, source_name):
         return f"⚠️ Groq Hatası: {str(e)[:50]}..."
 
 def send_push_notification(message, link, source_name, image_url=None):
+    # Baslikta Turkce karakter sorunu olmamasi icin source_name artik ASCII
     headers = {"Title": f"Kaynak: {source_name}", "Priority": "default", "Click": link}
     if image_url: headers["Attach"] = image_url
     try:
@@ -135,7 +146,7 @@ def send_push_notification(message, link, source_name, image_url=None):
 def main():
     history = load_history()
     new_entries_count = 0
-    print("Operasyon: Groq (Llama 3.3) Devrede...")
+    print("Operasyon: Groq (Llama 3.3) & Temizlik Modu Devrede...")
     
     for source in RSS_SOURCES:
         url = source["url"]
@@ -166,7 +177,6 @@ def main():
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    # Groq cok hizli oldugu icin 15sn yeterli
                     print(f"Gonderildi: {name}. Bekleniyor (15sn)...")
                     time.sleep(15) 
             
