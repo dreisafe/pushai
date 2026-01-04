@@ -9,7 +9,7 @@ import time
 import re
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZ!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZMAYI UNUTMA!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
@@ -45,10 +45,9 @@ if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
 def clean_html(raw_html):
-    # HTML temizligi ve karakter kisitlamasi
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext[:2500] # Mixtral icin biraz daha uzun tutabiliriz
+    return cleantext[:2500] 
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -90,7 +89,6 @@ def summarize_news_groq(title, summary, source_name):
     
     clean_summary = clean_html(summary)
     
-    # Prompt (Ayni kaliyor)
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
     
@@ -110,15 +108,14 @@ def summarize_news_groq(title, summary, source_name):
     """
     
     try:
-        # MODEL DEGISTI: 'mixtral-8x7b-32768'
-        # Bu modelin hafizasi cok genis oldugu icin 400 hatasi vermez.
+        # MODEL GUNCELLEMESI: Llama 3.3 (En yeni ve guclu model)
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Sen Türkçe haber özetleyen bir asistansın."},
                 {"role": "user", "content": prompt}
             ],
-            model="mixtral-8x7b-32768", 
-            temperature=0.3, # Daha kararli olsun
+            model="llama-3.3-70b-versatile", # Iste yeni guc kaynagimiz bu!
+            temperature=0.3, 
         )
         text = chat_completion.choices[0].message.content.strip()
         
@@ -126,7 +123,6 @@ def summarize_news_groq(title, summary, source_name):
         return text
 
     except Exception as e:
-        # Hatayi detayli gormek icin:
         return f"⚠️ Groq Hatası: {str(e)[:50]}..."
 
 def send_push_notification(message, link, source_name, image_url=None):
@@ -139,7 +135,7 @@ def send_push_notification(message, link, source_name, image_url=None):
 def main():
     history = load_history()
     new_entries_count = 0
-    print("Operasyon: Groq (Mixtral Dev) Devrede...")
+    print("Operasyon: Groq (Llama 3.3) Devrede...")
     
     for source in RSS_SOURCES:
         url = source["url"]
@@ -170,8 +166,9 @@ def main():
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    print(f"Gonderildi: {name}. Bekleniyor (10sn)...")
-                    time.sleep(10) 
+                    # Groq cok hizli oldugu icin 15sn yeterli
+                    print(f"Gonderildi: {name}. Bekleniyor (15sn)...")
+                    time.sleep(15) 
             
         except Exception as e: 
             continue
