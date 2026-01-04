@@ -9,14 +9,13 @@ import time
 import re
 
 # --- AYARLAR ---
-# BURAYA TELEFONUNDA KULLANDIGIN GIZLI TOPIC ISMINI YAZ!
-NTFY_TOPIC = "haber_akis_gizli_xyz_123" 
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # BURAYI KENDI TOPIC ISMINLE DUZELT!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 200
 SIMILARITY_THRESHOLD = 0.70 
 
-# Engellenecek Kelimeler (Spor, Magazin, Yarisma)
+# Engellenecekler
 BLOCKED_KEYWORDS = [
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
     "magazin", "ünlü oyuncu", "aşk iddiası", "burç yorumları", "astroloji", 
@@ -33,18 +32,16 @@ RSS_URLS = [
     "https://www.independentturkish.com/rss.xml"
 ]
 
-# API Key Kontrolu
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    print("HATA: API KEY Bulunamadi!")
+    print("HATA: API KEY YOK")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# HTML Temizleyici
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext[:1500] # Gemini 2.0 daha uzun metin isleyebilir
+    return cleantext[:1500]
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -71,11 +68,6 @@ def is_duplicate(entry, history):
     for item in history:
         if item['link'] == entry.link:
             return True
-    
-    for item in history:
-        similarity = SequenceMatcher(None, item['title'], entry.title).ratio()
-        if similarity > SIMILARITY_THRESHOLD:
-            return True
     return False
 
 def find_image_url(entry):
@@ -87,54 +79,37 @@ def find_image_url(entry):
         for link in entry.links:
             if 'image' in link.get('type', ''):
                 return link['href']
-    if 'enclosures' in entry:
-        for enclosure in entry.enclosures:
-            if 'image' in enclosure.get('type', ''):
-                return enclosure['href']
     return None
 
 def summarize_news(title, summary):
-    # İŞTE BURASI: 2026 Standartlarina uygun model
-    try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
-    except:
-        # Eger kutuphane cok eskiyse 'gemini-pro'ya dussun (Fallback)
-        model = genai.GenerativeModel('gemini-pro')
+    # En stabil ve ucretsiz model: 1.5 Flash
+    # Free tier limiti: Dakikada 15 istek. Biz yavaslatarak bunu asmayacagiz.
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     clean_summary = clean_html(summary)
     
     prompt = f"""
-    Görevin: Aşağıdaki haberi bir haber ajansı editörü gibi okumak ve kullanıcıya bildirim olarak gidecek şekilde özetlemek.
-    
-    Kurallar:
-    1. Haberin ana duygusunu veya konusunu en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️, 🌍).
-    2. Sadece TEK BİR CÜMLE kur.
-    3. Asla "Haberde...", "Metinde..." gibi girişler yapma. Direkt olayı anlat.
-    4. Siyasi veya hassas içerik olsa bile tarafsızca özetle, sansürleme.
+    Haber editörü gibi davran.
+    1. Haberi en iyi anlatan TEK BİR EMOJİ ile başla (Örn: 🚨, 📉, 🏛️).
+    2. Tek bir özet cümlesi yaz.
+    3. Asla "Haberde..." diye başlama.
     
     Başlık: {title}
     İçerik: {clean_summary}
     """
     
     try:
-        # Guvenlik filtresi olmadan cagri yapiyoruz (Default ayarlar)
-        # Gemini 2.0 genellikle daha esnek oldugu icin extra ayara gerek yok
         response = model.generate_content(prompt)
-        
-        if response.text:
-            return response.text.strip()
-        else:
-            return f"⚠️ AI Bos Dondu: {title}"
+        return response.text.strip()
             
     except Exception as e:
         error_msg = str(e)
-        if "404" in error_msg:
-             return f"⚠️ Model Bulunamadı: Kütüphane güncellenmeli."
-        elif "429" in error_msg:
-            return f"⚠️ Kota Doldu: Biraz bekle."
+        if "429" in error_msg:
+            return "KOTA_DOLDU" 
+        elif "404" in error_msg:
+             return f"⚠️ Model Hatası (404): requirements.txt guncelle."
         else:
-            # Hata mesajini kisaltip gonderelim ki gorelim
-            return f"⚠️ Hata: {error_msg[:60]}..." 
+            return f"⚠️ Hata: {error_msg[:40]}..." 
 
 def send_push_notification(message, link, image_url=None):
     headers = {
@@ -158,22 +133,28 @@ def main():
     history = load_history()
     new_entries_count = 0
     
-    print("Haberler taraniyor (Gemini 2.0)...")
+    print("Sakin modda taranıyor...")
     
     for url in RSS_URLS:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:3]: 
+            # KOTA ONLEMI: Her siteden sadece EN YENI 1 habere bak (3 degil)
+            for entry in feed.entries[:1]: 
                 if is_spam_or_blocked(entry.title):
                     continue
                     
                 if not is_duplicate(entry, history):
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    # AI Cagrisi
                     ai_summary = summarize_news(entry.title, content)
-                    image_url = find_image_url(entry)
                     
+                    # Eger kota dolduysa donguyu tamamen durdur
+                    if ai_summary == "KOTA_DOLDU":
+                        print("Kota doldu, islem durduruluyor...")
+                        send_push_notification("⚠️ Kota limitine takıldı. 15dk sonra tekrar deneyecek.", "https://google.com")
+                        break 
+
+                    image_url = find_image_url(entry)
                     send_push_notification(ai_summary, entry.link, image_url)
                     
                     history.append({
@@ -182,15 +163,21 @@ def main():
                         "date": datetime.now().isoformat()
                     })
                     new_entries_count += 1
-                    time.sleep(2) 
                     
+                    # KOTA ONLEMI: Her API cagrisindan sonra 12 saniye bekle
+                    # 60 saniye / 12 = Dakikada 5 istek (Limit 15, yani cok guvenli)
+                    print("API dinleniyor (12sn)...")
+                    time.sleep(12) 
+            
+            # Kota dolduysa ana donguyu de kir
+            if "KOTA_DOLDU" in locals().get('ai_summary', ''):
+                break
+                
         except Exception as e:
             continue
 
     if new_entries_count > 0:
         save_history(history)
-    else:
-        print("Yeni haber yok.")
 
 if __name__ == "__main__":
     main()
