@@ -7,7 +7,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
-import html  # <-- YENI: HTML kodlarini temizlemek icin
+import html
 
 # --- AYARLAR ---
 NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZ!
@@ -32,8 +32,7 @@ RSS_SOURCES = [
     {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
     {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml"},
     
-    # --- TURKCE KAYNAKLAR (KARAKTER DUZELTMELI) ---
-    # Baslikta sorun cikmamasi icin Turkce karakterleri kaldirdik
+    # --- TURKCE KAYNAKLAR (ASCII Isimler) ---
     {"name": "BBC Turkce", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
     {"name": "DW Turkce", "url": "https://rss.dw.com/xml/rss-tr-all"},     
     {"name": "Euronews TR", "url": "https://tr.euronews.com/rss"},            
@@ -48,10 +47,8 @@ if GROQ_API_KEY:
 
 def clean_html(raw_html):
     if not raw_html: return ""
-    # 1. HTML etiketlerini temizle (<br>, <p> vs)
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    # 2. HTML kodlarini duzelt (&amp; -> & gibi)
     cleantext = html.unescape(cleantext)
     return cleantext[:2500] 
 
@@ -91,19 +88,16 @@ def find_image_url(entry):
     return None
 
 def summarize_news_groq(title, summary, source_name):
-    if not client: return "API_KEY_YOK"
+    if not client: return "⚠️ API_KEY_YOK" # Hata mesajina da emoji ekledik
     
     clean_summary = clean_html(summary)
-    
-    # Eger ozet bossa, basligi ozet niyetine kullan (Guvenlik Onlemi)
-    if len(clean_summary) < 10:
-        clean_summary = title
+    if len(clean_summary) < 10: clean_summary = title
 
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
     
     GÖREVİN:
-    1. Haberi oku (İngilizce/Almanca olabilir).
+    1. Haberi oku.
     2. Çıktıyı MUTLAKA VE SADECE TÜRKÇE ver.
     3. Eğer haber Magazin, Spor, Burç, Yerel Kaza ise SADECE "SKIP" YAZ.
 
@@ -118,7 +112,6 @@ def summarize_news_groq(title, summary, source_name):
     """
     
     try:
-        # Llama 3.3 - En guclu ve guncel model
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": "Sen Türkçe haber özetleyen bir asistansın."},
@@ -128,25 +121,44 @@ def summarize_news_groq(title, summary, source_name):
             temperature=0.3, 
         )
         text = chat_completion.choices[0].message.content.strip()
-        
         if "SKIP" in text: return "SKIP"
         return text
 
     except Exception as e:
         return f"⚠️ Groq Hatası: {str(e)[:50]}..."
 
+# --- YENILENEN BILDIRIM FONKSIYONU ---
 def send_push_notification(message, link, source_name, image_url=None):
-    # Baslikta Turkce karakter sorunu olmamasi icin source_name artik ASCII
-    headers = {"Title": f"Kaynak: {source_name}", "Priority": "default", "Click": link}
-    if image_url: headers["Attach"] = image_url
+    # 1. Dinamik Logo (Icon) Stratejisi:
+    # Yapay Zeka mesajin basina bir emoji koyuyor (Örn: "🚨 ...").
+    # Biz bu ilk karakteri alip ntfy'a "Logo bu olsun" diyoruz.
+    
+    icon_emoji = "📰" # Varsayilan gazete ikonu
+    if message and len(message) > 0:
+        # Mesajin ilk karakterini (emojiyi) al
+        icon_emoji = message[0]
+
+    headers = {
+        "Title": f"Kaynak: {source_name}",
+        "Priority": "default",
+        "Click": link,
+        "Icon": icon_emoji, # <-- Iste sihirli dokunus! Habere gore degisen logo.
+    }
+
+    # 2. Buyuk Resim (Attach) Stratejisi:
+    # Eger RSS'ten gelen buyuk bir resim varsa, onu da ekle.
+    if image_url:
+        headers["Attach"] = image_url
+
     try:
+        # UTF-8 encoding, emoji ve Turkce karakterlerin saglikli gitmesini saglar
         requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode('utf-8'), headers=headers)
     except: pass
 
 def main():
     history = load_history()
     new_entries_count = 0
-    print("Operasyon: Groq (Llama 3.3) & Temizlik Modu Devrede...")
+    print("Operasyon: Groq (Llama 3.3) & Dinamik Logo Modu Devrede...")
     
     for source in RSS_SOURCES:
         url = source["url"]
@@ -159,7 +171,6 @@ def main():
                 if not is_duplicate(entry, history):
                     
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
-                    
                     ai_result = summarize_news_groq(entry.title, content, name)
                     
                     if ai_result == "SKIP":
@@ -167,11 +178,12 @@ def main():
                         history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                         continue
                     
-                    if ai_result == "API_KEY_YOK":
-                        send_push_notification("⚠️ Groq API Key Eksik", "", "Sistem")
+                    if "⚠️" in ai_result: # Hata mesajlarini yakala
+                        send_push_notification(ai_result, "", "Sistem")
                         break
 
                     image_url = find_image_url(entry)
+                    # Yeni bildirim fonksiyonunu cagiriyoruz
                     send_push_notification(ai_result, entry.link, name, image_url)
                     
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
