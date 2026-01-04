@@ -2,14 +2,14 @@ import feedparser
 import requests
 import json
 import os
-from groq import Groq  # <-- Google gitti, Groq geldi
+from groq import Groq
 from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI YAZ!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZ!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
@@ -39,16 +39,16 @@ RSS_SOURCES = [
     {"name": "Independent TR", "url": "https://www.independentturkish.com/rss.xml"}
 ]
 
-# API Key Kontrolu (Isim degisti)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 client = None
 if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
 def clean_html(raw_html):
+    # HTML temizligi ve karakter kisitlamasi
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext[:2000] 
+    return cleantext[:2500] # Mixtral icin biraz daha uzun tutabiliriz
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -90,6 +90,7 @@ def summarize_news_groq(title, summary, source_name):
     
     clean_summary = clean_html(summary)
     
+    # Prompt (Ayni kaliyor)
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
     
@@ -109,14 +110,15 @@ def summarize_news_groq(title, summary, source_name):
     """
     
     try:
-        # Llama 3 Modeli (Cok hizli)
+        # MODEL DEGISTI: 'mixtral-8x7b-32768'
+        # Bu modelin hafizasi cok genis oldugu icin 400 hatasi vermez.
         chat_completion = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Sen özet çıkaran profesyonel bir haber asistanısın."},
+                {"role": "system", "content": "Sen Türkçe haber özetleyen bir asistansın."},
                 {"role": "user", "content": prompt}
             ],
-            model="llama3-8b-8192", # Bedava ve Hizli model
-            temperature=0.5,
+            model="mixtral-8x7b-32768", 
+            temperature=0.3, # Daha kararli olsun
         )
         text = chat_completion.choices[0].message.content.strip()
         
@@ -124,8 +126,8 @@ def summarize_news_groq(title, summary, source_name):
         return text
 
     except Exception as e:
-        if "429" in str(e): return "KOTA_DOLDU"
-        return f"⚠️ Hata: {str(e)[:30]}..."
+        # Hatayi detayli gormek icin:
+        return f"⚠️ Groq Hatası: {str(e)[:50]}..."
 
 def send_push_notification(message, link, source_name, image_url=None):
     headers = {"Title": f"Kaynak: {source_name}", "Priority": "default", "Click": link}
@@ -137,7 +139,7 @@ def send_push_notification(message, link, source_name, image_url=None):
 def main():
     history = load_history()
     new_entries_count = 0
-    print("Operasyon: Groq (Llama 3) Devrede...")
+    print("Operasyon: Groq (Mixtral Dev) Devrede...")
     
     for source in RSS_SOURCES:
         url = source["url"]
@@ -151,7 +153,6 @@ def main():
                     
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                     
-                    # GROQ ile Ozetle
                     ai_result = summarize_news_groq(entry.title, content, name)
                     
                     if ai_result == "SKIP":
@@ -159,12 +160,8 @@ def main():
                         history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                         continue
                     
-                    if ai_result == "KOTA_DOLDU":
-                        print("⚠️ Groq Kotasi Doldu (Cok nadir olur).")
-                        break 
-                    
                     if ai_result == "API_KEY_YOK":
-                        print("API Key eksik!")
+                        send_push_notification("⚠️ Groq API Key Eksik", "", "Sistem")
                         break
 
                     image_url = find_image_url(entry)
@@ -173,9 +170,8 @@ def main():
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    # Groq hizli oldugu icin 15 sn bekleme yeterli (Gemini icin 45ti)
-                    print(f"Gonderildi: {name}. Bekleniyor (15sn)...")
-                    time.sleep(15) 
+                    print(f"Gonderildi: {name}. Bekleniyor (10sn)...")
+                    time.sleep(10) 
             
         except Exception as e: 
             continue
