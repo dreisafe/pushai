@@ -2,14 +2,14 @@ import feedparser
 import requests
 import json
 import os
-import google.generativeai as genai
+from groq import Groq  # <-- Google gitti, Groq geldi
 from datetime import datetime
 from difflib import SequenceMatcher
 import time
 import re
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KENDI KANAL ADINI YAZ!
+NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI YAZ!
 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
@@ -30,7 +30,6 @@ RSS_SOURCES = [
     {"name": "NY Times", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
     {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
     {"name": "Sky News", "url": "https://feeds.skynews.com/feeds/rss/world.xml"},
-    {"name": "CNBC Economy", "url": "https://www.cnbc.com/id/100727362/device/rss/rss.html"},
     
     # --- TURKCE KAYNAKLAR ---
     {"name": "BBC Türkçe", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
@@ -40,28 +39,11 @@ RSS_SOURCES = [
     {"name": "Independent TR", "url": "https://www.independentturkish.com/rss.xml"}
 ]
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-def get_best_model_name():
-    try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
-        for model in available_models:
-            if "flash" in model.lower() and "1.5" in model: return model 
-        for model in available_models:
-            if "pro" in model.lower() and "1.5" in model: return model
-        
-        if available_models: return available_models[0]
-        return "models/gemini-1.5-flash"
-    except:
-        return "models/gemini-1.5-flash"
-
-ACTIVE_MODEL_NAME = get_best_model_name()
+# API Key Kontrolu (Isim degisti)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+client = None
+if GROQ_API_KEY:
+    client = Groq(api_key=GROQ_API_KEY)
 
 def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
@@ -103,33 +85,44 @@ def find_image_url(entry):
             if 'image' in link.get('type', ''): return link['href']
     return None
 
-def summarize_news(title, summary, source_name):
+def summarize_news_groq(title, summary, source_name):
+    if not client: return "API_KEY_YOK"
+    
     clean_summary = clean_html(summary)
     
     prompt = f"""
     Sen Global bir Haber İstihbarat Servisisin.
     
     GÖREVİN:
-    1. Haberi oku ve anla (İngilizce/Almanca olabilir).
-    2. Çıktıyı MUTLAKA VE SADECE TÜRKÇE olarak ver.
-    3. Eğer haber Magazin, Spor skoru, Ansiklopedik bilgi, Yerel 3. sayfa haberi veya Reklam ise SADECE "SKIP" YAZ.
+    1. Haberi oku (İngilizce/Almanca olabilir).
+    2. Çıktıyı MUTLAKA VE SADECE TÜRKÇE ver.
+    3. Eğer haber Magazin, Spor, Burç, Yerel Kaza ise SADECE "SKIP" YAZ.
 
     4. Eğer haber ÖNEMLİ ise:
        - Başa olayı anlatan EMOJİ koy.
        - Haberi TÜRKÇE olarak, en fazla 15 kelimeyle, SONUÇ ODAKLI özetle.
-       - Asla "Haberde..." veya "{source_name}'e göre..." deme. Direkt olayı yaz.
+       - Asla "Haberde..." deme. Direkt olayı yaz.
 
-    Haber Kaynağı: {source_name}
+    Kaynak: {source_name}
     Başlık: {title}
     İçerik: {clean_summary}
     """
     
     try:
-        model = genai.GenerativeModel(ACTIVE_MODEL_NAME)
-        response = model.generate_content(prompt)
-        text = response.text.strip()
+        # Llama 3 Modeli (Cok hizli)
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "Sen özet çıkaran profesyonel bir haber asistanısın."},
+                {"role": "user", "content": prompt}
+            ],
+            model="llama3-8b-8192", # Bedava ve Hizli model
+            temperature=0.5,
+        )
+        text = chat_completion.choices[0].message.content.strip()
+        
         if "SKIP" in text: return "SKIP"
         return text
+
     except Exception as e:
         if "429" in str(e): return "KOTA_DOLDU"
         return f"⚠️ Hata: {str(e)[:30]}..."
@@ -144,7 +137,7 @@ def send_push_notification(message, link, source_name, image_url=None):
 def main():
     history = load_history()
     new_entries_count = 0
-    print(f"Global Tarama Basliyor (Yavas Mod)... Model: {ACTIVE_MODEL_NAME}")
+    print("Operasyon: Groq (Llama 3) Devrede...")
     
     for source in RSS_SOURCES:
         url = source["url"]
@@ -157,17 +150,22 @@ def main():
                 if not is_duplicate(entry, history):
                     
                     content = getattr(entry, 'summary', getattr(entry, 'description', ''))
-                    ai_result = summarize_news(entry.title, content, name)
+                    
+                    # GROQ ile Ozetle
+                    ai_result = summarize_news_groq(entry.title, content, name)
                     
                     if ai_result == "SKIP":
-                        print(f"Elenen Haber: {entry.title}")
+                        print(f"Elenen: {entry.title}")
                         history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                         continue
-
+                    
                     if ai_result == "KOTA_DOLDU":
-                        # Kota dolduysa sadece log bas, bildirim atip rahatsiz etme artik
-                        print("⚠️ Kota doldu. Sonraki calismada devam edecek.")
+                        print("⚠️ Groq Kotasi Doldu (Cok nadir olur).")
                         break 
+                    
+                    if ai_result == "API_KEY_YOK":
+                        print("API Key eksik!")
+                        break
 
                     image_url = find_image_url(entry)
                     send_push_notification(ai_result, entry.link, name, image_url)
@@ -175,13 +173,10 @@ def main():
                     history.append({"title": entry.title, "link": entry.link, "date": datetime.now().isoformat()})
                     new_entries_count += 1
                     
-                    # --- KOTA KALKANI ---
-                    # Her isteğin arasina 45 SANIYE koyduk. 
-                    # 11 kaynak x 45 sn = ~8 dakika sürer. GitHub icin sorun yok, API icin cok guvenli.
-                    print(f"Gonderildi: {name}. Bekleniyor (45sn)...")
-                    time.sleep(45) 
+                    # Groq hizli oldugu icin 15 sn bekleme yeterli (Gemini icin 45ti)
+                    print(f"Gonderildi: {name}. Bekleniyor (15sn)...")
+                    time.sleep(15) 
             
-            if "KOTA_DOLDU" in locals().get('ai_result', ''): break
         except Exception as e: 
             continue
 
