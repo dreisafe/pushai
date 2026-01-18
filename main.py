@@ -10,22 +10,29 @@ import re
 import html
 
 # --- AYARLAR ---
-NTFY_TOPIC = "haber_akis_gizli_xyz_123"  # <-- KANAL ADINI BURAYA YAZ
+NTFY_TOPIC = "haber_akis_gizli_xyz_123" 
 HISTORY_FILE = "history.json"
 MAX_HISTORY_ITEMS = 300 
 CONTEXT_WINDOW_SIZE = 20
 
-# --- KARALİSTE (Spam, Magazin, Arkeoloji, Teknoloji Çöplüğü) ---
+# --- KATILAŞTIRILMIŞ FİLTRE LİSTESİ (V6) ---
 BLOCKED_KEYWORDS = [
+    # Spor & Magazin
     "süper lig", "maç sonucu", "galatasaray", "fenerbahçe", "beşiktaş", "trabzonspor",
-    "premier league", "nba", "gol", "transfer",
-    "magazin", "ünlü oyuncu", "aşk", "sevgili", "boşanma", "nafaka", "gelin evi", 
+    "premier league", "nba", "gol", "transfer", "kupa", "madalya",
+    "magazin", "ünlü", "aşk", "sevgili", "boşanma", "nafaka", "gelin evi", 
     "kim milyoner", "masterchef", "survivor", "gossip", "royal family", "kardashian",
+    # Teknoloji Çöplüğü & Ürün Tanıtımı
     "yeni telefon", "tanıttı", "lansman", "özellikleri sızdı", "fiyatı", "iphone", 
-    "android", "samsung", "inceleme", "kutu açılışı",
+    "android", "samsung", "inceleme", "kutu açılışı", "güncelleme geldi",
+    # Arkeoloji / Tarih / Bilimsel "Soft" Haberler
     "arkeolojik", "kazı", "bulundu", "yıllık", "yıl önce", "antik", "fosil", "kemik", 
     "mezar", "lahit", "müze", "restorasyon", "keşfedildi", "tarihi eser", "dinozor", 
-    "kremasyon", "pyre", "sunak", "tapınak", "mozaik", "lahit"
+    "kremasyon", "pyre", "sunak", "tapınak", "mozaik", "kabile", "amazon ormanları",
+    # "Soft" İçerik: Röportaj, Tavsiye, Belgesel, Analiz (Buffett/Fridman Engeli)
+    "röportaj", "açıklamalarda bulundu", "tavsiye", "öneri", "ipucu", "analiz etti",
+    "belgesel", "görüntüledi", "yayınladı", "sohbet", "podcast", "yorumladı",
+    "neden", "niçin", "nasıl yapılır", "ebeveynlik", "bahis", "at yarışı", "borsa yorumu"
 ]
 
 RSS_SOURCES = [
@@ -33,8 +40,8 @@ RSS_SOURCES = [
     {"name": "AP News", "url": "https://apnews.com/hub/world-news/feed"},
     {"name": "BBC World", "url": "http://feeds.bbci.co.uk/news/world/rss.xml"},
     {"name": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
-    {"name": "Guardian", "url": "https://www.theguardian.com/world/rss"},
-    {"name": "CNBC", "url": "https://www.cnbc.com/id/100727362/device/rss/rss.html"}, 
+    # The Guardian ve CNBC cok fazla "feature" (yumusak) haber giriyor, onlari eledim veya dikkatli olmali
+    # {"name": "Guardian", "url": "https://www.theguardian.com/world/rss"}, 
     {"name": "BBC TR", "url": "https://feeds.bbci.co.uk/turkce/rss.xml"},
     {"name": "DW TR", "url": "https://rss.dw.com/xml/rss-tr-all"},     
     {"name": "Euronews", "url": "https://tr.euronews.com/rss"},            
@@ -46,7 +53,6 @@ client = None
 if GROQ_API_KEY:
     client = Groq(api_key=GROQ_API_KEY)
 
-# Anlık oturum hafızası (Aynı anda düşen spamleri engellemek için)
 session_sent_summaries = []
 
 def clean_html(raw_html):
@@ -90,30 +96,38 @@ def find_image_url(entry):
             if 'image' in link.get('type', ''): return link['href']
     return None
 
-# --- YENİLENMİŞ VE KORUMALI ANALİZ FONKSİYONU ---
+# --- V6: KIRMIZI ALARM ANALİZ MODU ---
 def analyze_news_groq(title, summary, source_name, recent_history_titles):
     if not client: return "API_KEY_YOK"
     
     clean_summary = clean_html(summary)
     if len(clean_summary) < 10: clean_summary = title
     
-    # Geçmiş bağlamını oluştur
     context_list = recent_history_titles + session_sent_summaries
     history_context = "\n".join([f"- {h}" for h in context_list[-20:]])
 
     prompt = f"""
-    Sen Türkçeyi kusursuz kullanan, kıdemli bir Haber Editörüsün.
+    Sen bir "SON DAKİKA MASASI" Şefisin. Görevin gereksiz her şeyi elemek.
     
-    GÖREV: Metni anla ve Türkiye okuyucusu için profesyonelce, tek cümlelik haber flaşı yaz.
+    FİLTRE (BUNLARI GÖRÜRSEN DİREKT "SKIP" YAZ):
+    1. RÖPORTAJ/GÖRÜŞ: "X kişi şunun hakkında konuştu", "Analiz etti", "Tavsiye verdi". (Örn: Buffett, Lex Fridman, Elon Musk konuştu -> SKIP).
+    2. BELGESEL/BİLİM: "Amazon kabilesi görüntülendi", "Yeni araştırma yapıldı".
+    3. RUTİN SİYASET: "Seçim çalışmaları başladı", "Meclis toplandı" (Sonuç yoksa SKIP).
+    4. YEREL/KÜÇÜK: Sadece Dünyayı veya Türkiye'yi sarsacak olaylar kalsın.
     
-    KURALLAR:
-    1. "Çatbot", "Catbot", "Fonayon" YASAK. "Sohbet Robotu", "Yapay Zeka" kullan.
-    2. Özel isimleri bozma (Grok, Musk).
-    3. Robot gibi çevirme, olayı anlat. Pasif değil AKTİF dil kullan ("Götürüldü" deme -> "İade edildi" de).
-    4. Magazin, spor, laf dalaşı (kınadı, endişeli) ise "SKIP" yaz.
-    5. Aşağıdaki GEÇMİŞ LİSTESİNDE bu haber varsa "SKIP" yaz.
+    KABUL EDİLENLER (SADECE BUNLAR):
+    - Savaş ilanı, Ateşkes, Büyük Saldırı.
+    - Büyük Deprem (>6.0), Tsunami, Felaket.
+    - Ekonomik Çöküş, İflas, Dev Şirket Satışı.
+    - Suikast, Darbe, Tutuklama (Devlet Başkanı seviyesi).
     
-    --- GEÇMİŞ ---
+    YAZIM TARZI (TELGRAF STİLİ):
+    - ASLA uzun cümle kurma. Bağlaçları at.
+    - Max 10-12 kelime.
+    - Örnek: "İtalya Başbakanı Meloni ile Trump görüştü..." DEME -> "Meloni ve Trump, gümrük vergilerini görüştü." DE.
+    - Örnek: "ABD Başkanı Biden Ukrayna'ya yardımı onayladı" -> "Biden, Ukrayna'ya 2 milyar dolarlık yardımı onayladı."
+    
+    --- GEÇMİŞ KONTROLÜ (TEKRARSA SKIP YAZ) ---
     {history_context}
     
     --- HABER ---
@@ -122,40 +136,36 @@ def analyze_news_groq(title, summary, source_name, recent_history_titles):
     İçerik: {clean_summary}
     """
     
-    # Retry (Tekrar Deneme) Mekanizması - Hata 429 için
     max_retries = 3
     for attempt in range(max_retries):
         try:
             chat_completion = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": "Sen ciddi bir haber editörüsün."},
+                    {"role": "system", "content": "Sen sadece son dakika eylemlerini bildiren, gevezelik etmeyen bir botsun."},
                     {"role": "user", "content": prompt}
                 ],
                 model="llama-3.3-70b-versatile",
-                temperature=0.3, 
+                temperature=0.1, # Cok dusuk yaraticilik = Sadece gercekler
             )
             text = chat_completion.choices[0].message.content.strip()
             
-            # Elemeler
             if "SKIP" in text or "skip" in text.lower():
                 if len(text) < 15: return "SKIP"
             
-            # "HEPSİ BÜYÜK" yazdıysa düzelt
-            if text.isupper(): 
-                text = text.capitalize()
+            if text.isupper(): text = text.capitalize()
+            # Gereksiz "Son Dakika:" gibi on ekleri de temizle
+            text = text.replace("Son dakika:", "").replace("SON DAKİKA:", "").strip()
             
-            # Tırnakları temizle
             return text.replace('"', '').replace("'", "")
 
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg:
-                print(f"⚠️ Hız Sınırı (429). {60} saniye soğuma bekleniyor... (Deneme {attempt+1}/{max_retries})")
-                time.sleep(60) # 1 Dakika bekle
-                continue # Tekrar dene
+                print(f"⚠️ Hız Sınırı (429). {60} saniye bekleniyor...")
+                time.sleep(60) 
+                continue 
             else:
-                print(f"❌ Groq Hatası: {error_msg}")
-                return "SKIP" # Bildirim gönderme, sessiz kal
+                return "SKIP"
     
     return "SKIP"
 
@@ -170,19 +180,16 @@ def main():
     history = load_history()
     recent_titles = [item['title'] for item in history[-CONTEXT_WINDOW_SIZE:]]
     new_entries_count = 0
-    print(f"--- Haber Taraması (V5.2 - Hata Korumalı): {datetime.now().strftime('%H:%M')} ---")
+    print(f"--- Haber Taraması (V6 - Kırmızı Alarm): {datetime.now().strftime('%H:%M')} ---")
     
     for source in RSS_SOURCES:
         try:
             feed = feedparser.parse(source["url"])
-            # Sadece son 2 habere bak, fazlası API kotasını yer
             for entry in feed.entries[:2]: 
                 
-                # 1. Hızlı Filtre
                 if is_spam_or_blocked(entry.title): continue
                 if is_duplicate_basic(entry, history): continue
                 
-                # 2. YZ Analizi (Hata Korumalı)
                 content = getattr(entry, 'summary', getattr(entry, 'description', ''))
                 ai_result = analyze_news_groq(entry.title, content, source["name"], recent_titles)
                 
@@ -192,23 +199,19 @@ def main():
                 
                 if ai_result == "API_KEY_YOK": break
 
-                # 3. Gönderim
                 image_url = find_image_url(entry)
                 send_push_notification(ai_result, entry.link, source["name"], image_url)
                 
-                # Kayıt
                 timestamp = datetime.now().isoformat()
                 history.append({"title": entry.title, "link": entry.link, "date": timestamp})
                 recent_titles.append(entry.title) 
                 session_sent_summaries.append(ai_result) 
                 new_entries_count += 1
                 
-                print(f"✅ GÖNDERİLDİ: {ai_result}")
-                time.sleep(5) # Kaynaklar arası bekleme
+                print(f"✅ {ai_result}")
+                time.sleep(3)
             
-        except Exception as e: 
-            print(f"Kaynak Hatası ({source['name']}): {e}")
-            continue
+        except Exception: continue
 
     if new_entries_count > 0: save_history(history)
 
